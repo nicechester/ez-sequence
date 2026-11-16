@@ -1,5 +1,7 @@
 # ez-sequence
 
+**Live: https://nicechester.github.io/ez-sequence/**
+
 Mermaid sequence diagrams rendered 100% in the browser, with the participant
 row pinned to the top while you scroll a tall diagram.
 
@@ -14,10 +16,12 @@ it on GitHub Pages.
   labels) stay visible while messages scroll underneath. The diagram title
   scrolls away normally.
 - Zoom: `+`, `−`, Fit, 1:1, or `Ctrl/Cmd + mouse wheel` over the diagram.
+- **Full screen**: shows only the diagram. Esc exits; a small floating bar
+  offers zoom and Exit while full screen.
 - Mermaid themes: auto (follows system dark mode), default, neutral, forest,
   dark, redux variants.
-- Open `.mmd` / `.md` / `.txt` files (button or drag-and-drop onto the
-  editor). For Markdown, the first ```` ```mermaid ```` block is used.
+- Open any text file with the Open button, or **drop a file anywhere on the
+  page**. For Markdown, the first ```` ```mermaid ```` block is used.
 - Download the rendered SVG.
 - **Copy link**: puts the diagram text, compressed, into the URL hash so you
   can share a diagram as a plain link. Nothing is sent anywhere.
@@ -76,13 +80,13 @@ Full reference: https://mermaid.js.org/syntax/sequenceDiagram.html
 ```sh
 git add .
 git commit -m "ez-sequence: Mermaid sequence viewer with sticky header"
-git remote add origin git@github.com:<you>/ez-sequence.git
+git remote add origin git@github.com:nicechester/ez-sequence.git
 git push -u origin main
 ```
 
 Then in the repo: Settings → Pages → Source *Deploy from a branch*,
 branch `main`, folder `/ (root)`. The site appears at
-`https://<you>.github.io/ez-sequence/`.
+https://nicechester.github.io/ez-sequence/.
 
 ## How the sticky header works
 

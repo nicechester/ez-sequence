@@ -40,7 +40,29 @@
   .group { display: inline-flex; align-items: center; gap: 4px; }
   .group button { padding: 5px 8px; }
   .spacer { flex: 1; }
-  #zoomPct { min-width: 44px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #zoomPct, #fsPct { min-width: 44px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- full screen (Fullscreen API, or a fixed-position fallback) ---- */
+  /* Rules kept separate: a browser without :fullscreen would otherwise drop the whole selector list. */
+  #canvas:fullscreen { background: var(--canvas); }
+  #canvas.fs-fallback { position: fixed; inset: 0; z-index: 50; background: var(--canvas); }
+  #fsBar {
+    display: none; position: fixed; right: 16px; bottom: 16px; z-index: 60;
+    align-items: center; gap: 4px; padding: 6px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  }
+  #canvas:fullscreen #fsBar { display: flex; }
+  #canvas.fs-fallback #fsBar { display: flex; }
+  #fsBar .hintkey { color: var(--muted); font-size: 11px; margin: 0 4px; }
+
+  /* ---- window-wide file drop ---- */
+  #dropOverlay {
+    display: none; position: fixed; inset: 0; z-index: 100; pointer-events: none;
+    align-items: center; justify-content: center; background: rgba(37, 99, 235, .12);
+    border: 3px dashed var(--accent); font-size: 18px; color: var(--fg);
+  }
+  #dropOverlay.show { display: flex; }
+  #dropOverlay span { background: var(--panel); padding: 12px 20px; border-radius: 10px; border: 1px solid var(--border); }
 
   /* ---- main split ---- */
   main { flex: 1; display: flex; min-height: 0; }
@@ -54,7 +76,6 @@
     font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     background: transparent; color: var(--fg); white-space: pre; tab-size: 2;
   }
-  textarea.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
   #status {
     padding: 6px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px;
     min-height: 29px; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word;
@@ -103,9 +124,10 @@
     <button id="zoomFit" title="Fit diagram width to the view">Fit</button>
     <button id="zoomReset" title="Reset zoom to 100%">1:1</button>
   </span>
+  <button id="fsBtn" title="Show only the diagram, full screen (Esc exits)">⛶ Full screen</button>
   <span class="spacer"></span>
-  <button id="openBtn" title="Open a .mmd / .md / .txt file">Open…</button>
-  <input type="file" id="fileInput" accept=".mmd,.mermaid,.md,.txt" hidden>
+  <button id="openBtn" title="Open a text file (or drop one anywhere on the page)">Open…</button>
+  <input type="file" id="fileInput" accept=".mmd,.mermaid,.md,.txt,.puml,text/*" hidden>
   <button id="downloadBtn" title="Download the rendered SVG" disabled>SVG ↓</button>
   <button id="linkBtn" title="Copy a link that contains this diagram">Copy link</button>
   <button id="toggleEditor" title="Show / hide the editor">Editor</button>
@@ -122,8 +144,17 @@
       <div id="stickyWrap"></div>
       <div id="diagram"><div id="empty">Type a Mermaid sequence diagram on the left.</div></div>
     </div>
+    <div id="fsBar">
+      <button id="fsOut" title="Zoom out">−</button>
+      <span id="fsPct">100%</span>
+      <button id="fsIn" title="Zoom in">+</button>
+      <button id="fsFit" title="Fit diagram width">Fit</button>
+      <button id="fsExit" title="Exit full screen">Exit</button>
+      <span class="hintkey">Esc</span>
+    </div>
   </section>
 </main>
+<div id="dropOverlay"><span>Drop a text file to open it</span></div>
 
 <!-- Mermaid runs entirely in the browser. CDN first; if that fails, fall back to a vendored copy (see README). -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/12.3.0/mermaid.min.js"
@@ -140,6 +171,8 @@
     zoomIn: $('#zoomIn'), zoomOut: $('#zoomOut'), zoomFit: $('#zoomFit'), zoomReset: $('#zoomReset'), zoomPct: $('#zoomPct'),
     openBtn: $('#openBtn'), fileInput: $('#fileInput'), downloadBtn: $('#downloadBtn'), linkBtn: $('#linkBtn'),
     toggleEditor: $('#toggleEditor'),
+    fsBtn: $('#fsBtn'), fsOut: $('#fsOut'), fsIn: $('#fsIn'), fsPct: $('#fsPct'), fsFit: $('#fsFit'), fsExit: $('#fsExit'),
+    dropOverlay: $('#dropOverlay'),
   };
 
   const LS = 'ez-sequence:';
@@ -359,7 +392,7 @@ sequenceDiagram
     const head = state.sticky ? state.head : null;
     state.main.style.width = `${w * z}px`;
     state.main.style.height = `${h * z}px`;
-    el.zoomPct.textContent = `${Math.round(z * 100)}%`;
+    showZoom();
 
     if (head && state.clone) {
       const hh = head.bottom - head.top;
@@ -393,18 +426,57 @@ sequenceDiagram
   }
 
   // ---------- zoom ----------
+  function showZoom() {
+    const pct = `${Math.round(state.zoom * 100)}%`;
+    el.zoomPct.textContent = pct; el.fsPct.textContent = pct;
+  }
   function setZoom(z) {
     state.zoom = Math.min(6, Math.max(0.1, z));
     save('zoom', state.zoom);
     layout();
   }
+  function fitWidth() {
+    if (!state.vb.w) return;
+    setZoom((el.canvas.clientWidth - STAGE_PAD * 2) / state.vb.w);
+  }
   const ZOOM_STEP = 1.2;
   el.zoomIn.addEventListener('click', () => setZoom(state.zoom * ZOOM_STEP));
   el.zoomOut.addEventListener('click', () => setZoom(state.zoom / ZOOM_STEP));
   el.zoomReset.addEventListener('click', () => setZoom(1));
-  el.zoomFit.addEventListener('click', () => {
-    if (!state.vb.w) return;
-    setZoom((el.canvas.clientWidth - STAGE_PAD * 2) / state.vb.w);
+  el.zoomFit.addEventListener('click', fitWidth);
+  el.fsIn.addEventListener('click', () => setZoom(state.zoom * ZOOM_STEP));
+  el.fsOut.addEventListener('click', () => setZoom(state.zoom / ZOOM_STEP));
+  el.fsFit.addEventListener('click', fitWidth);
+
+  // ---------- full screen ----------
+  // Uses the Fullscreen API on the diagram pane (the browser handles Esc). Where the API is missing
+  // (e.g. iPhone Safari) a fixed-position fallback is used and Esc is handled here.
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+  const inFullscreen = () => fsEl() === el.canvas || el.canvas.classList.contains('fs-fallback');
+  async function enterFullscreen() {
+    const req = el.canvas.requestFullscreen || el.canvas.webkitRequestFullscreen;
+    if (req) {
+      try { await req.call(el.canvas); return; } catch { /* fall through to the fallback */ }
+    }
+    el.canvas.classList.add('fs-fallback');
+    syncFullscreen();
+  }
+  function exitFullscreen() {
+    if (fsEl()) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+    el.canvas.classList.remove('fs-fallback');
+    syncFullscreen();
+  }
+  function syncFullscreen() {
+    const on = inFullscreen();
+    el.fsBtn.textContent = on ? '⛶ Exit full screen' : '⛶ Full screen';
+    updateStuck();
+  }
+  el.fsBtn.addEventListener('click', () => (inFullscreen() ? exitFullscreen() : enterFullscreen()));
+  el.fsExit.addEventListener('click', exitFullscreen);
+  document.addEventListener('fullscreenchange', syncFullscreen);
+  document.addEventListener('webkitfullscreenchange', syncFullscreen);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && el.canvas.classList.contains('fs-fallback')) exitFullscreen();
   });
   el.canvas.addEventListener('wheel', (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -439,23 +511,46 @@ sequenceDiagram
     save('editorHidden', document.body.classList.contains('editor-hidden'));
   });
 
-  // Open file (button + drag-and-drop onto the editor)
+  // Open file: button, or drop a file anywhere on the page
   el.openBtn.addEventListener('click', () => el.fileInput.click());
   el.fileInput.addEventListener('change', () => { if (el.fileInput.files[0]) loadFile(el.fileInput.files[0]); el.fileInput.value = ''; });
-  el.src.addEventListener('dragover', (e) => { e.preventDefault(); el.src.classList.add('dragover'); });
-  el.src.addEventListener('dragleave', () => el.src.classList.remove('dragover'));
-  el.src.addEventListener('drop', (e) => {
-    e.preventDefault(); el.src.classList.remove('dragover');
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+
+  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); dragDepth++;
+    el.dropOverlay.classList.add('show');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+  });
+  window.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) el.dropOverlay.classList.remove('show');
+  });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); dragDepth = 0;
+    el.dropOverlay.classList.remove('show');
+    const f = e.dataTransfer.files[0];
     if (f) loadFile(f);
   });
-  function loadFile(file) {
-    file.text().then((txt) => {
-      // Accept a Markdown file: use the first ```mermaid fence if there is one.
-      const m = /```mermaid\s*\n([\s\S]*?)```/.exec(txt);
-      const src = m ? m[1] : txt;
-      el.src.value = src; save('src', src); render();
-    });
+
+  const MAX_FILE = 2 * 1024 * 1024;
+  async function loadFile(file) {
+    if (file.size > MAX_FILE) { setStatus(`${file.name} is ${Math.round(file.size / 1024)} KB; files over 2 MB are not opened.`, true); return; }
+    let txt;
+    try { txt = await file.text(); } catch (err) { setStatus(`Could not read ${file.name}: ${err.message}`, true); return; }
+    if (txt.includes('\u0000')) { setStatus(`${file.name} does not look like a text file.`, true); return; }
+    // Markdown: use the first ```mermaid fence if there is one.
+    const m = /```mermaid\s*\n([\s\S]*?)```/.exec(txt);
+    const src = (m ? m[1] : txt).replace(/^﻿/, '');
+    el.src.value = src; save('src', src);
+    await render();
+    if (!el.status.classList.contains('error')) setStatus(`Opened ${file.name} · ${el.status.textContent}`);
   }
 
   // Download rendered SVG
@@ -487,7 +582,7 @@ sequenceDiagram
     state.theme = load('theme', 'auto'); el.theme.value = state.theme;
     el.autoRender.checked = load('auto', true);
     if (load('editorHidden', false)) document.body.classList.add('editor-hidden');
-    el.zoomPct.textContent = `${Math.round(state.zoom * 100)}%`;
+    showZoom();
 
     const fromHash = await decodeHash(location.hash);
     el.src.value = fromHash !== null ? fromHash : load('src', SAMPLE);
