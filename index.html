@@ -76,6 +76,13 @@
     font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     background: transparent; color: var(--fg); white-space: pre; tab-size: 2;
   }
+  textarea[hidden] { display: none; }
+  /* CodeMirror host (replaces the textarea once the editor modules load) */
+  #editorHost { flex: 1; min-height: 0; overflow: hidden; }
+  #editorHost[hidden] { display: none; }
+  #editorHost .cm-editor { height: 100%; font-size: 12.5px; }
+  #editorHost .cm-editor.cm-focused { outline: none; }
+  #editorHost .cm-scroller { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.5; }
   #status {
     padding: 6px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px;
     min-height: 29px; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word;
@@ -127,7 +134,8 @@
   <button id="fsBtn" title="Show only the diagram, full screen (Esc exits)">⛶ Full screen</button>
   <span class="spacer"></span>
   <button id="openBtn" title="Open a text file (or drop one anywhere on the page)">Open…</button>
-  <input type="file" id="fileInput" accept=".mmd,.mermaid,.md,.txt,.puml,text/*" hidden>
+  <input type="file" id="fileInput" accept=".mmd,.mermaid,.md,.txt,.puml,.plantuml,.pu,.iuml,.wsd,text/*" hidden>
+  <button id="convertBtn" title="Convert the PlantUML sequence diagram in the editor to Mermaid (undo with Cmd/Ctrl+Z)">PlantUML → Mermaid</button>
   <button id="downloadBtn" title="Download the rendered SVG" disabled>SVG ↓</button>
   <button id="linkBtn" title="Copy a link that contains this diagram">Copy link</button>
   <button id="toggleEditor" title="Show / hide the editor">Editor</button>
@@ -135,6 +143,7 @@
 
 <main>
   <section id="editorPane">
+    <div id="editorHost" hidden></div>
     <textarea id="src" spellcheck="false" placeholder="sequenceDiagram&#10;  Alice->>Bob: hello"></textarea>
     <div id="status">Loading Mermaid…</div>
   </section>
@@ -154,7 +163,10 @@
     </div>
   </section>
 </main>
-<div id="dropOverlay"><span>Drop a text file to open it</span></div>
+<div id="dropOverlay"><span>Drop a text file, or dragged text, to open it</span></div>
+
+<!-- PlantUML sequence → Mermaid converter (local file, no dependencies). -->
+<script src="puml2mermaid.js"></script>
 
 <!-- Mermaid runs entirely in the browser. CDN first; if that fails, fall back to a vendored copy (see README). -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/12.3.0/mermaid.min.js"
@@ -165,11 +177,11 @@
   'use strict';
   const $ = (s) => document.querySelector(s);
   const el = {
-    src: $('#src'), status: $('#status'), canvas: $('#canvas'), stage: $('#stage'),
+    src: $('#src'), editorHost: $('#editorHost'), status: $('#status'), canvas: $('#canvas'), stage: $('#stage'),
     spacer: $('#spacer'), stickyWrap: $('#stickyWrap'), diagram: $('#diagram'),
     renderBtn: $('#renderBtn'), autoRender: $('#autoRender'), stickyToggle: $('#stickyToggle'), theme: $('#theme'),
     zoomIn: $('#zoomIn'), zoomOut: $('#zoomOut'), zoomFit: $('#zoomFit'), zoomReset: $('#zoomReset'), zoomPct: $('#zoomPct'),
-    openBtn: $('#openBtn'), fileInput: $('#fileInput'), downloadBtn: $('#downloadBtn'), linkBtn: $('#linkBtn'),
+    openBtn: $('#openBtn'), fileInput: $('#fileInput'), downloadBtn: $('#downloadBtn'), linkBtn: $('#linkBtn'), convertBtn: $('#convertBtn'),
     toggleEditor: $('#toggleEditor'),
     fsBtn: $('#fsBtn'), fsOut: $('#fsOut'), fsIn: $('#fsIn'), fsPct: $('#fsPct'), fsFit: $('#fsFit'), fsExit: $('#fsExit'),
     dropOverlay: $('#dropOverlay'),
@@ -307,7 +319,8 @@ sequenceDiagram
   let renderSeq = 0;
   async function render() {
     if (!state.ready) return;
-    const text = el.src.value;
+    clearTimeout(timer);                 // an explicit render cancels any pending auto-render
+    const text = editor.value;
     if (!text.trim()) { setStatus('Nothing to render.'); return; }
     const seq = ++renderSeq;
     const t0 = performance.now();
@@ -486,13 +499,49 @@ sequenceDiagram
   el.canvas.addEventListener('scroll', updateStuck, { passive: true });
 
   // ---------- editor ----------
+  // CodeMirror 6 when its modules load (see the module script at the bottom); the plain textarea otherwise.
   let timer = null;
-  el.src.addEventListener('input', () => {
-    save('src', el.src.value);
+  let cm = null;
+  const editor = {
+    get value() { return cm ? cm.state.doc.toString() : el.src.value; },
+    set value(v) {
+      if (cm) cm.dispatch({ changes: { from: 0, to: cm.state.doc.length, insert: v } });  // undoable
+      else el.src.value = v;
+    },
+  };
+  function onSourceChanged() {
+    save('src', editor.value);
     if (!el.autoRender.checked) return;
     clearTimeout(timer);
     timer = setTimeout(render, 500);
-  });
+  }
+
+  window.__ezAttachEditor = (lib) => {
+    if (cm) return;
+    const { EditorView, basicSetup, keymap, indentWithTab, mermaid: mermaidLang, oneDark, Compartment } = lib;
+    const themeComp = new Compartment();
+    const dark = () => matchMedia('(prefers-color-scheme: dark)').matches;
+    cm = new EditorView({
+      doc: el.src.value,
+      extensions: [
+        keymap.of([{ key: 'Mod-Enter', run: () => { render(); return true; } }, indentWithTab]),  // before basicSetup: wins over its Mod-Enter
+        basicSetup,
+        mermaidLang(),
+        themeComp.of(dark() ? oneDark : []),
+        EditorView.updateListener.of((u) => { if (u.docChanged) onSourceChanged(); }),
+      ],
+      parent: el.editorHost,
+    });
+    el.src.hidden = true;
+    el.editorHost.hidden = false;
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      cm.dispatch({ effects: themeComp.reconfigure(dark() ? oneDark : []) });
+    });
+  };
+  window.__ezEditorFailed = (err) => console.warn('CodeMirror did not load; using the plain textarea.', err);
+
+  // Textarea fallback behaviour
+  el.src.addEventListener('input', onSourceChanged);
   el.src.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); render(); }
     if (e.key === 'Tab') {
@@ -515,28 +564,47 @@ sequenceDiagram
   el.openBtn.addEventListener('click', () => el.fileInput.click());
   el.fileInput.addEventListener('change', () => { if (el.fileInput.files[0]) loadFile(el.fileInput.files[0]); el.fileInput.value = ''; });
 
-  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  // Accepts real files (Finder, Explorer) and dropped text (e.g. a selection dragged out of an editor).
+  // Drags that start inside the page (moving text within the editor) are left alone.
+  let internalDrag = false;
+  window.addEventListener('dragstart', () => { internalDrag = true; });
+  window.addEventListener('dragend', () => { internalDrag = false; });
+  const droppable = (e) => {
+    if (internalDrag || !e.dataTransfer) return false;
+    const t = Array.from(e.dataTransfer.types || []);
+    return t.includes('Files') || t.includes('text/plain') || t.includes('text/uri-list');
+  };
   let dragDepth = 0;
   window.addEventListener('dragenter', (e) => {
-    if (!hasFiles(e)) return;
+    if (!droppable(e)) return;
     e.preventDefault(); dragDepth++;
     el.dropOverlay.classList.add('show');
   });
   window.addEventListener('dragover', (e) => {
-    if (!hasFiles(e)) return;
+    if (!droppable(e)) return;
     e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
   });
   window.addEventListener('dragleave', (e) => {
-    if (!hasFiles(e)) return;
+    if (!droppable(e)) return;
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0) el.dropOverlay.classList.remove('show');
   });
   window.addEventListener('drop', (e) => {
-    if (!hasFiles(e)) return;
+    if (!droppable(e)) return;
     e.preventDefault(); dragDepth = 0;
     el.dropOverlay.classList.remove('show');
-    const f = e.dataTransfer.files[0];
-    if (f) loadFile(f);
+    const dt = e.dataTransfer;
+    const f = dt.files && dt.files[0];
+    if (f) { loadFile(f); return; }
+    const text = dt.getData('text/plain') || '';
+    const uris = dt.getData('text/uri-list') || '';
+    const looksLikePath = /^(file:\/\/|\/|~\/|[A-Za-z]:\\)\S*$/.test(text.trim());
+    if (uris.trim() || looksLikePath) {
+      // Editors like VS Code / Cursor drag a file *path*, not the file. A web page cannot read a local path.
+      setStatus('That drag carried only a file path, which a web page cannot open. Drag the file from Finder/Explorer, drag the selected text instead, or use Open….', true);
+      return;
+    }
+    if (text.trim()) loadText(text, 'dropped text');
   });
 
   const MAX_FILE = 2 * 1024 * 1024;
@@ -545,13 +613,34 @@ sequenceDiagram
     let txt;
     try { txt = await file.text(); } catch (err) { setStatus(`Could not read ${file.name}: ${err.message}`, true); return; }
     if (txt.includes('\u0000')) { setStatus(`${file.name} does not look like a text file.`, true); return; }
+    await loadText(txt, file.name);
+  }
+  const PUML_EXT = /\.(puml|plantuml|pu|iuml|wsd)$/i;
+  async function loadText(txt, label) {
     // Markdown: use the first ```mermaid fence if there is one.
     const m = /```mermaid\s*\n([\s\S]*?)```/.exec(txt);
-    const src = (m ? m[1] : txt).replace(/^﻿/, '');
-    el.src.value = src; save('src', src);
+    let src = (m ? m[1] : txt).replace(/^﻿/, '');
+    let note = '';
+    // PlantUML by extension or by @startuml: convert on the way in.
+    if (window.pumlToMermaid && (PUML_EXT.test(label) || /@startuml/i.test(src))) {
+      const r = window.pumlToMermaid(src);
+      src = r.text;
+      note = ` · converted from PlantUML${r.warnings.length ? `, ${r.warnings.length} line(s) kept as %% TODO` : ''}`;
+    }
+    editor.value = src; save('src', src);
     await render();
-    if (!el.status.classList.contains('error')) setStatus(`Opened ${file.name} · ${el.status.textContent}`);
+    if (!el.status.classList.contains('error')) setStatus(`Opened ${label}${note} · ${el.status.textContent}`);
   }
+
+  // Convert whatever is in the editor from PlantUML to Mermaid, in place (undoable in CodeMirror).
+  el.convertBtn.addEventListener('click', async () => {
+    if (!window.pumlToMermaid) { setStatus('Converter not loaded (puml2mermaid.js is missing).', true); return; }
+    const r = window.pumlToMermaid(editor.value);
+    editor.value = r.text; save('src', r.text);
+    await render();
+    const warn = r.warnings.length ? ` · ${r.warnings.length} line(s) kept as %% TODO comments` : '';
+    if (!el.status.classList.contains('error')) setStatus(`Converted PlantUML → Mermaid${warn} · ${el.status.textContent}`);
+  });
 
   // Download rendered SVG
   el.downloadBtn.addEventListener('click', () => {
@@ -565,7 +654,7 @@ sequenceDiagram
 
   // Copy a self-contained link
   el.linkBtn.addEventListener('click', async () => {
-    const hash = await encodeHash(el.src.value);
+    const hash = await encodeHash(editor.value);
     history.replaceState(null, '', '#' + hash);
     try { await navigator.clipboard.writeText(location.href); setStatus(`Link copied (${location.href.length} chars).`); }
     catch { setStatus('Link is in the address bar (clipboard access was denied).'); }
@@ -585,7 +674,7 @@ sequenceDiagram
     showZoom();
 
     const fromHash = await decodeHash(location.hash);
-    el.src.value = fromHash !== null ? fromHash : load('src', SAMPLE);
+    editor.value = fromHash !== null ? fromHash : load('src', SAMPLE);
     if (fromHash !== null) save('src', fromHash);
 
     configureMermaid();
@@ -597,6 +686,58 @@ sequenceDiagram
   if (window.mermaid) boot();
   else window.addEventListener('load', () => { if (window.mermaid) boot(); });
 })();
+</script>
+
+<!--
+  CodeMirror 6 + Mermaid syntax highlighting, as ES modules.
+  Every package is served by esm.sh with its dependencies left external ("*" prefix), and this import
+  map resolves each bare specifier to exactly one URL, so all packages share a single @codemirror/state
+  instance. If anything here fails to load, the page keeps working with the plain textarea.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "codemirror":                 "https://esm.sh/*codemirror@6.0.2",
+    "codemirror-lang-mermaid":    "https://esm.sh/*codemirror-lang-mermaid@0.5.0",
+    "@codemirror/state":          "https://esm.sh/*@codemirror/state@6.7.6",
+    "@codemirror/view":           "https://esm.sh/*@codemirror/view@6.43.15",
+    "@codemirror/language":       "https://esm.sh/*@codemirror/language@6.13.1",
+    "@codemirror/commands":       "https://esm.sh/*@codemirror/commands@6.11.1",
+    "@codemirror/search":         "https://esm.sh/*@codemirror/search@6.7.2",
+    "@codemirror/autocomplete":   "https://esm.sh/*@codemirror/autocomplete@6.20.4",
+    "@codemirror/lint":           "https://esm.sh/*@codemirror/lint@6.9.8",
+    "@codemirror/theme-one-dark": "https://esm.sh/*@codemirror/theme-one-dark@6.1.3",
+    "@lezer/common":              "https://esm.sh/*@lezer/common@1.5.5",
+    "@lezer/highlight":           "https://esm.sh/*@lezer/highlight@1.2.5",
+    "@lezer/lr":                  "https://esm.sh/*@lezer/lr@1.4.12",
+    "style-mod":                  "https://esm.sh/*style-mod@4.1.4",
+    "w3c-keyname":                "https://esm.sh/*w3c-keyname@2.2.8",
+    "crelt":                      "https://esm.sh/*crelt@1.0.7"
+  }
+}
+</script>
+<script type="module">
+  try {
+    const [cmMod, viewMod, stateMod, cmdMod, langMod, darkMod] = await Promise.all([
+      import('codemirror'),
+      import('@codemirror/view'),
+      import('@codemirror/state'),
+      import('@codemirror/commands'),
+      import('codemirror-lang-mermaid'),
+      import('@codemirror/theme-one-dark'),
+    ]);
+    window.__ezAttachEditor({
+      EditorView: viewMod.EditorView,
+      keymap: viewMod.keymap,
+      basicSetup: cmMod.basicSetup,
+      Compartment: stateMod.Compartment,
+      indentWithTab: cmdMod.indentWithTab,
+      mermaid: langMod.mermaid,
+      oneDark: darkMod.oneDark,
+    });
+  } catch (err) {
+    window.__ezEditorFailed && window.__ezEditorFailed(err);
+  }
 </script>
 </body>
 </html>

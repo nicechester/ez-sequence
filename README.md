@@ -10,8 +10,10 @@ it on GitHub Pages.
 
 ## Features
 
-- Editor on the left, diagram on the right. Auto-renders as you type, or
-  press `Ctrl/Cmd+Enter`.
+- CodeMirror 6 editor with Mermaid syntax highlighting, line numbers,
+  bracket matching, search (`Cmd/Ctrl+F`) and full undo history. Falls back
+  to a plain textarea if the editor modules cannot be loaded.
+- Auto-renders as you type, or press `Ctrl/Cmd+Enter`.
 - **Sticky participant header.** The participant boxes (and `box` group
   labels) stay visible while messages scroll underneath. The diagram title
   scrolls away normally.
@@ -21,7 +23,11 @@ it on GitHub Pages.
 - Mermaid themes: auto (follows system dark mode), default, neutral, forest,
   dark, redux variants.
 - Open any text file with the Open button, or **drop a file anywhere on the
-  page**. For Markdown, the first ```` ```mermaid ```` block is used.
+  page**. Dropping selected text (dragged out of an editor) works too. For
+  Markdown, the first ```` ```mermaid ```` block is used.
+  Note: dragging a file from the VS Code or Cursor explorer only carries the
+  file's path, which a web page cannot open. Drag from Finder/Explorer, or
+  drag the selected text instead.
 - Download the rendered SVG.
 - **Copy link**: puts the diagram text, compressed, into the URL hash so you
   can share a diagram as a plain link. Nothing is sent anywhere.
@@ -29,22 +35,49 @@ it on GitHub Pages.
 
 ## Privacy
 
-Rendering happens in your browser. The only network request is the Mermaid
-library itself, loaded from cdnjs with a pinned version. Your diagram text
-never leaves the page.
+Rendering happens in your browser. The only network requests are for the
+libraries themselves, all pinned to exact versions: Mermaid from cdnjs, and
+CodeMirror plus its Mermaid grammar from esm.sh. Your diagram text never
+leaves the page.
 
 ### Fully offline
 
-To remove the CDN dependency, vendor Mermaid:
+Mermaid: vendor it and the page falls back to it automatically if the CDN
+fails (or point the `<script src>` at the local copy to make it primary).
 
 ```sh
 curl -L -o vendor/mermaid.min.js \
   https://cdnjs.cloudflare.com/ajax/libs/mermaid/12.3.0/mermaid.min.js
 ```
 
-The page already falls back to `vendor/mermaid.min.js` if the CDN fails. To
-make the vendored copy the primary source, point the `<script src>` in
-`index.html` at `vendor/mermaid.min.js`.
+CodeMirror: the import map in `index.html` lists every module URL. Download
+each one into `vendor/` and change the map entries to the local paths. If
+the editor modules are unavailable, the page still works with a plain
+textarea.
+
+## PlantUML files
+
+Mermaid cannot render PlantUML, but the page converts PlantUML *sequence*
+diagrams to Mermaid for you:
+
+- Opening or dropping a `.puml` / `.plantuml` / `.pu` / `.iuml` / `.wsd`
+  file, or any text containing `@startuml`, converts it on the way in.
+- The **PlantUML → Mermaid** button converts whatever is in the editor, in
+  place. Undo with `Cmd/Ctrl+Z`.
+
+Covered: participant declarations with aliases and types (`actor`,
+`database`, `queue`, `boundary`, `control`, `entity`, `collections`),
+`box`, all message arrows (solid/dashed, thin `->>`, cross `->x`,
+bidirectional), `++`/`--`/`**`/`!!` shorthands, `activate`/`deactivate`/
+`return`, `create`/`destroy`, `alt`/`else`/`opt`/`loop`/`par`/`break`/
+`critical`/`group`, single- and multi-line notes, `ref`, `== dividers ==`
+(as a note across all participants), `...delays...`, `autonumber`, `title`
+and comments. Presentation lines (`skinparam`, `hide footbox`, `!theme`, …)
+are dropped. Anything not understood is kept as a `%% TODO plantuml:`
+comment so you can fix it by hand.
+
+The converter is `puml2mermaid.js`, a dependency-free script that also runs
+in Node (`require('./puml2mermaid.js')(text)`).
 
 ## Mermaid sequence syntax cheat sheet
 
