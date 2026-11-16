@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ez-sequence</title>
+<meta name="description" content="Mermaid sequence diagrams rendered in the browser, with the participant row pinned while you scroll.">
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --border: #d9dce1; --fg: #1f2328; --muted: #6b7280;
+    --accent: #2563eb; --accent-fg: #fff; --canvas: #e9ebef; --danger: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --panel: #1e2126; --border: #30343b; --fg: #e6e8eb; --muted: #9aa1ab;
+      --accent: #3b82f6; --canvas: #101215; --danger: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--fg); display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ---- top bar ---- */
+  .bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .bar h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; white-space: nowrap; }
+  .bar label { color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+  select, button {
+    padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+    color: var(--fg); font: inherit; cursor: pointer; white-space: nowrap;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .group { display: inline-flex; align-items: center; gap: 4px; }
+  .group button { padding: 5px 8px; }
+  .spacer { flex: 1; }
+  #zoomPct { min-width: 44px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- main split ---- */
+  main { flex: 1; display: flex; min-height: 0; }
+  #editorPane {
+    width: 420px; min-width: 240px; max-width: 75vw; resize: horizontal; overflow: hidden;
+    display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel);
+  }
+  body.editor-hidden #editorPane { display: none; }
+  textarea {
+    flex: 1; width: 100%; border: 0; resize: none; padding: 10px 12px; outline: none;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: transparent; color: var(--fg); white-space: pre; tab-size: 2;
+  }
+  textarea.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
+  #status {
+    padding: 6px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px;
+    min-height: 29px; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #status.error { color: var(--danger); }
+
+  /* ---- diagram canvas ---- */
+  #canvas { flex: 1; overflow: auto; position: relative; background: var(--canvas); }
+  #stage { position: relative; width: max-content; min-width: 100%; padding: 16px; }
+  #spacer { height: 0; }
+  #stickyWrap {
+    position: sticky; top: 0; z-index: 2; display: none; overflow: hidden;
+    background: var(--paper, #fff); transition: box-shadow .15s;
+  }
+  #stickyWrap.stuck { box-shadow: 0 6px 12px -6px rgba(0,0,0,.45), 0 1px 0 rgba(0,0,0,.12); }
+  #stickyWrap svg, #diagram > svg { display: block; max-width: none !important; }
+  #diagram > svg { position: relative; z-index: 1; background: var(--paper, #fff); }
+  #empty { color: var(--muted); padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <h1>ez-sequence</h1>
+  <button id="renderBtn" class="primary" title="Render (Ctrl/Cmd+Enter)">Render</button>
+  <label><input type="checkbox" id="autoRender" checked> Auto</label>
+  <label><input type="checkbox" id="stickyToggle" checked> Sticky header</label>
+  <label>Theme
+    <select id="theme">
+      <option value="auto">auto</option>
+      <option value="default">default</option>
+      <option value="neutral">neutral</option>
+      <option value="forest">forest</option>
+      <option value="dark">dark</option>
+      <option value="redux">redux</option>
+      <option value="redux-color">redux-color</option>
+      <option value="redux-dark">redux-dark</option>
+      <option value="redux-dark-color">redux-dark-color</option>
+    </select>
+  </label>
+  <span class="group">
+    <button id="zoomOut" title="Zoom out">−</button>
+    <span id="zoomPct">100%</span>
+    <button id="zoomIn" title="Zoom in">+</button>
+    <button id="zoomFit" title="Fit diagram width to the view">Fit</button>
+    <button id="zoomReset" title="Reset zoom to 100%">1:1</button>
+  </span>
+  <span class="spacer"></span>
+  <button id="openBtn" title="Open a .mmd / .md / .txt file">Open…</button>
+  <input type="file" id="fileInput" accept=".mmd,.mermaid,.md,.txt" hidden>
+  <button id="downloadBtn" title="Download the rendered SVG" disabled>SVG ↓</button>
+  <button id="linkBtn" title="Copy a link that contains this diagram">Copy link</button>
+  <button id="toggleEditor" title="Show / hide the editor">Editor</button>
+</header>
+
+<main>
+  <section id="editorPane">
+    <textarea id="src" spellcheck="false" placeholder="sequenceDiagram&#10;  Alice->>Bob: hello"></textarea>
+    <div id="status">Loading Mermaid…</div>
+  </section>
+  <section id="canvas">
+    <div id="stage">
+      <div id="spacer"></div>
+      <div id="stickyWrap"></div>
+      <div id="diagram"><div id="empty">Type a Mermaid sequence diagram on the left.</div></div>
+    </div>
+  </section>
+</main>
+
+<!-- Mermaid runs entirely in the browser. CDN first; if that fails, fall back to a vendored copy (see README). -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/12.3.0/mermaid.min.js"
+        onerror="var s=document.createElement('script');s.src='vendor/mermaid.min.js';s.onload=function(){window.__ezBoot&&window.__ezBoot()};s.onerror=function(){window.__ezNoMermaid&&window.__ezNoMermaid()};document.head.appendChild(s)"></script>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const el = {
+    src: $('#src'), status: $('#status'), canvas: $('#canvas'), stage: $('#stage'),
+    spacer: $('#spacer'), stickyWrap: $('#stickyWrap'), diagram: $('#diagram'),
+    renderBtn: $('#renderBtn'), autoRender: $('#autoRender'), stickyToggle: $('#stickyToggle'), theme: $('#theme'),
+    zoomIn: $('#zoomIn'), zoomOut: $('#zoomOut'), zoomFit: $('#zoomFit'), zoomReset: $('#zoomReset'), zoomPct: $('#zoomPct'),
+    openBtn: $('#openBtn'), fileInput: $('#fileInput'), downloadBtn: $('#downloadBtn'), linkBtn: $('#linkBtn'),
+    toggleEditor: $('#toggleEditor'),
+  };
+
+  const LS = 'ez-sequence:';
+  const STAGE_PAD = 16;
+  const DARK_THEMES = new Set(['dark', 'redux-dark', 'redux-dark-color']);
+
+  const SAMPLE = `---
+title: Checkout flow (scroll down - the participant row stays pinned)
+---
+sequenceDiagram
+  autonumber
+  actor Customer
+  box rgb(232, 240, 254) Edge
+    participant Web as Web App
+    participant GW as API Gateway
+  end
+  box rgb(232, 250, 236) Core services
+    participant Orders as Order Service
+    participant Inv as Inventory
+    participant Pay as Payment
+  end
+  participant DB as Orders DB
+  participant Bus as Event Bus
+
+  Customer->>Web: Click "Place order"
+  Web->>GW: POST /orders
+  GW->>+Orders: createOrder(cart)
+  Orders->>+Inv: reserve(items)
+  Inv-->>-Orders: reservation id
+  Orders->>DB: INSERT order (PENDING)
+  DB-->>Orders: ok
+  Orders->>+Pay: authorize(amount, card)
+  Pay->>Pay: fraud screening
+  Pay-->>-Orders: authorized
+  Orders->>DB: UPDATE order (AUTHORIZED)
+  Orders->>Bus: publish OrderAuthorized
+  Orders-->>-GW: 201 Created
+  GW-->>Web: order id
+  Web-->>Customer: Show confirmation
+
+  Note over Web,Bus: Fulfilment
+
+  Bus->>+Inv: OrderAuthorized
+  Inv->>Inv: pick & pack
+  Inv->>Bus: publish OrderPacked
+  deactivate Inv
+  Bus->>Orders: OrderPacked
+  Orders->>DB: UPDATE order (PACKED)
+  Orders->>+Pay: capture(authorization)
+  Pay-->>-Orders: captured
+  Orders->>DB: UPDATE order (PAID)
+  Orders->>Bus: publish OrderPaid
+  Bus->>Web: OrderPaid (websocket)
+  Web-->>Customer: "Your order is on its way"
+
+  Note over Web,Bus: Edge cases
+
+  Customer->>Web: Cancel order
+  Web->>GW: DELETE /orders/{id}
+  GW->>+Orders: cancel(id)
+  Orders->>DB: SELECT order
+  DB-->>Orders: PAID
+  alt not yet shipped
+    Orders->>Pay: refund(amount)
+    Pay-->>Orders: refunded
+    Orders->>Inv: release(items)
+    Orders->>DB: UPDATE order (CANCELLED)
+    Orders-->>GW: 200 OK
+  else already shipped
+    Orders-->>GW: 409 Conflict
+  end
+  deactivate Orders
+  GW-->>Web: result
+  Web-->>Customer: Show status
+`;
+
+  const state = {
+    zoom: 1, sticky: true, theme: 'auto',
+    svgText: '', vb: { x: 0, y: 0, w: 0, h: 0 }, head: null, main: null, clone: null, ready: false,
+  };
+
+  // ---------- persistence ----------
+  const load = (k, d) => { try { const v = localStorage.getItem(LS + k); return v === null ? d : JSON.parse(v); } catch { return d; } };
+  const save = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch {} };
+
+  // ---------- share links: #z=<base64url(deflate-raw(utf8))> or #s=<base64url(utf8)> ----------
+  const b64url = {
+    enc: (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+    dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+  };
+  async function encodeHash(text) {
+    const bytes = new TextEncoder().encode(text);
+    if (typeof CompressionStream === 'function') {
+      try {
+        const cs = new CompressionStream('deflate-raw');
+        const w = cs.writable.getWriter(); w.write(bytes); w.close();
+        return 'z=' + b64url.enc(new Uint8Array(await new Response(cs.readable).arrayBuffer()));
+      } catch {}
+    }
+    return 's=' + b64url.enc(bytes);
+  }
+  async function decodeHash(hash) {
+    const m = /^#?(z|s)=(.+)$/.exec(hash || '');
+    if (!m) return null;
+    try {
+      const bytes = b64url.dec(m[2]);
+      if (m[1] === 's') return new TextDecoder().decode(bytes);
+      const ds = new DecompressionStream('deflate-raw');
+      const w = ds.writable.getWriter(); w.write(bytes); w.close();
+      return new TextDecoder().decode(await new Response(ds.readable).arrayBuffer());
+    } catch { return null; }
+  }
+
+  // ---------- Mermaid ----------
+  function effectiveTheme() {
+    if (state.theme !== 'auto') return state.theme;
+    return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+  }
+  function configureMermaid() {
+    const theme = effectiveTheme();
+    window.mermaid.initialize({
+      startOnLoad: false,
+      theme,
+      securityLevel: 'strict',
+      suppressErrorRendering: true,
+      sequence: { useMaxWidth: false },
+    });
+    const paper = DARK_THEMES.has(theme) ? '#1e1e1e' : '#ffffff';
+    document.documentElement.style.setProperty('--paper', paper);
+  }
+
+  let renderSeq = 0;
+  async function render() {
+    if (!state.ready) return;
+    const text = el.src.value;
+    if (!text.trim()) { setStatus('Nothing to render.'); return; }
+    const seq = ++renderSeq;
+    const t0 = performance.now();
+    try {
+      const { svg } = await window.mermaid.render(`ez-${Date.now()}-${seq}`, text);
+      if (seq !== renderSeq) return; // superseded by a newer render
+      showSvg(svg);
+      const ms = Math.round(performance.now() - t0);
+      const n = state.main.querySelectorAll('line.actor-line').length;
+      const kind = state.head ? 'sticky header on' : (state.sticky ? 'no participant row found, sticky header off' : 'sticky header off');
+      setStatus(`Rendered ${Math.round(state.vb.w)}×${Math.round(state.vb.h)} in ${ms} ms · ${n} participant${n === 1 ? '' : 's'} · ${kind}`);
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      setStatus(String(err && err.message || err).trim(), true); // keep the last good diagram on screen
+    }
+  }
+
+  function showSvg(svgText) {
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    if (doc.querySelector('parsererror')) throw new Error('Mermaid returned invalid SVG.');
+    const svg = document.importNode(doc.documentElement, true);
+
+    const vb = (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+    let box;
+    if (vb.length === 4 && vb.every(Number.isFinite)) box = { x: vb[0], y: vb[1], w: vb[2], h: vb[3] };
+    else {
+      const w = parseFloat(svg.getAttribute('width')) || 800, h = parseFloat(svg.getAttribute('height')) || 600;
+      box = { x: 0, y: 0, w, h }; svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    }
+    // Mermaid's own CSS inside the SVG is scoped by the element id, so the id must stay (and is duplicated on the clone).
+    svg.removeAttribute('width'); svg.removeAttribute('height');
+    svg.style.maxWidth = 'none';
+    svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+
+    el.diagram.replaceChildren(svg);
+    state.svgText = svgText; state.vb = box; state.main = svg;
+    state.head = detectHeader(svg);       // needs the SVG in the DOM for getBBox()
+    buildClone();
+    layout();
+    el.downloadBtn.disabled = false;
+  }
+
+  /**
+   * The band of the SVG (in user units) that holds the participant heads.
+   * bottom = where the topmost lifeline starts.
+   * top    = topmost shape that lies entirely above that line. The diagram title is a bare <text>
+   *          directly under the root, so it is skipped and scrolls away; box labels live in a <g>
+   *          and are kept.
+   */
+  function detectHeader(svg) {
+    let bottom = Infinity;
+    for (const line of svg.querySelectorAll('line.actor-line')) {
+      const y1 = parseFloat(line.getAttribute('y1')), y2 = parseFloat(line.getAttribute('y2'));
+      if (Number.isFinite(y1) && Number.isFinite(y2)) bottom = Math.min(bottom, Math.min(y1, y2));
+    }
+    if (!Number.isFinite(bottom)) return null;
+
+    let top = Infinity;
+    for (const shape of svg.querySelectorAll('rect,ellipse,circle,path,polygon,polyline,text,image,line,foreignObject')) {
+      if (shape.tagName === 'text' && shape.parentNode === svg) continue;   // title
+      if (shape.classList.contains('actor-line')) continue;
+      let b; try { b = shape.getBBox(); } catch { continue; }
+      if (b.width === 0 && b.height === 0) continue;
+      if (b.y + b.height <= bottom + 0.5) top = Math.min(top, b.y);
+    }
+    if (!Number.isFinite(top)) top = bottom - 65;
+    return { top: Math.max(state.vb.y, top - 4), bottom: bottom + 1 };
+  }
+
+  function buildClone() {
+    el.stickyWrap.replaceChildren();
+    state.clone = null;
+    if (!state.main || !state.head) return;
+    const clone = state.main.cloneNode(true);
+    el.stickyWrap.appendChild(clone);
+    state.clone = clone;
+  }
+
+  function layout() {
+    if (!state.main) return;
+    const z = state.zoom, { x: vx, y: vy, w, h } = state.vb;
+    const head = state.sticky ? state.head : null;
+    state.main.style.width = `${w * z}px`;
+    state.main.style.height = `${h * z}px`;
+    el.zoomPct.textContent = `${Math.round(z * 100)}%`;
+
+    if (head && state.clone) {
+      const hh = head.bottom - head.top;
+      const offset = head.top - vy;                      // distance from the SVG's top edge to the band
+      el.spacer.style.height = `${offset * z}px`;
+      el.stickyWrap.style.display = 'block';
+      el.stickyWrap.style.width = `${w * z}px`;
+      el.stickyWrap.style.height = `${hh * z}px`;
+      state.clone.setAttribute('viewBox', `${vx} ${head.top} ${w} ${hh}`);
+      state.clone.style.width = `${w * z}px`;
+      state.clone.style.height = `${hh * z}px`;
+      // Pull the real diagram up underneath the clone so, before scrolling, both draw the same pixels.
+      state.main.style.marginTop = `${-(offset + hh) * z}px`;
+    } else {
+      el.spacer.style.height = '0px';
+      el.stickyWrap.style.display = 'none';
+      state.main.style.marginTop = '0px';
+    }
+    updateStuck();
+  }
+
+  function updateStuck() {
+    if (!state.head || !state.sticky) { el.stickyWrap.classList.remove('stuck'); return; }
+    const stuck = el.canvas.scrollTop > STAGE_PAD + (state.head.top - state.vb.y) * state.zoom + 1;
+    el.stickyWrap.classList.toggle('stuck', stuck);
+  }
+
+  function setStatus(msg, isError = false) {
+    el.status.textContent = msg;
+    el.status.classList.toggle('error', isError);
+  }
+
+  // ---------- zoom ----------
+  function setZoom(z) {
+    state.zoom = Math.min(6, Math.max(0.1, z));
+    save('zoom', state.zoom);
+    layout();
+  }
+  const ZOOM_STEP = 1.2;
+  el.zoomIn.addEventListener('click', () => setZoom(state.zoom * ZOOM_STEP));
+  el.zoomOut.addEventListener('click', () => setZoom(state.zoom / ZOOM_STEP));
+  el.zoomReset.addEventListener('click', () => setZoom(1));
+  el.zoomFit.addEventListener('click', () => {
+    if (!state.vb.w) return;
+    setZoom((el.canvas.clientWidth - STAGE_PAD * 2) / state.vb.w);
+  });
+  el.canvas.addEventListener('wheel', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    setZoom(state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+  el.canvas.addEventListener('scroll', updateStuck, { passive: true });
+
+  // ---------- editor ----------
+  let timer = null;
+  el.src.addEventListener('input', () => {
+    save('src', el.src.value);
+    if (!el.autoRender.checked) return;
+    clearTimeout(timer);
+    timer = setTimeout(render, 500);
+  });
+  el.src.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); render(); }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      el.src.setRangeText('  ', el.src.selectionStart, el.src.selectionEnd, 'end');
+      el.src.dispatchEvent(new Event('input'));
+    }
+  });
+  el.renderBtn.addEventListener('click', render);
+  el.autoRender.addEventListener('change', () => save('auto', el.autoRender.checked));
+  el.stickyToggle.addEventListener('change', () => { state.sticky = el.stickyToggle.checked; save('sticky', state.sticky); layout(); });
+  el.theme.addEventListener('change', () => { state.theme = el.theme.value; save('theme', state.theme); configureMermaid(); render(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state.theme === 'auto' && state.ready) { configureMermaid(); render(); } });
+  el.toggleEditor.addEventListener('click', () => {
+    document.body.classList.toggle('editor-hidden');
+    save('editorHidden', document.body.classList.contains('editor-hidden'));
+  });
+
+  // Open file (button + drag-and-drop onto the editor)
+  el.openBtn.addEventListener('click', () => el.fileInput.click());
+  el.fileInput.addEventListener('change', () => { if (el.fileInput.files[0]) loadFile(el.fileInput.files[0]); el.fileInput.value = ''; });
+  el.src.addEventListener('dragover', (e) => { e.preventDefault(); el.src.classList.add('dragover'); });
+  el.src.addEventListener('dragleave', () => el.src.classList.remove('dragover'));
+  el.src.addEventListener('drop', (e) => {
+    e.preventDefault(); el.src.classList.remove('dragover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+  function loadFile(file) {
+    file.text().then((txt) => {
+      // Accept a Markdown file: use the first ```mermaid fence if there is one.
+      const m = /```mermaid\s*\n([\s\S]*?)```/.exec(txt);
+      const src = m ? m[1] : txt;
+      el.src.value = src; save('src', src); render();
+    });
+  }
+
+  // Download rendered SVG
+  el.downloadBtn.addEventListener('click', () => {
+    if (!state.svgText) return;
+    const blob = new Blob([state.svgText], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'sequence.svg' });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  // Copy a self-contained link
+  el.linkBtn.addEventListener('click', async () => {
+    const hash = await encodeHash(el.src.value);
+    history.replaceState(null, '', '#' + hash);
+    try { await navigator.clipboard.writeText(location.href); setStatus(`Link copied (${location.href.length} chars).`); }
+    catch { setStatus('Link is in the address bar (clipboard access was denied).'); }
+  });
+
+  // ---------- boot ----------
+  async function boot() {
+    if (state.ready) return;
+    if (!window.mermaid) return;
+    state.ready = true;
+
+    state.zoom = load('zoom', 1);
+    state.sticky = load('sticky', true); el.stickyToggle.checked = state.sticky;
+    state.theme = load('theme', 'auto'); el.theme.value = state.theme;
+    el.autoRender.checked = load('auto', true);
+    if (load('editorHidden', false)) document.body.classList.add('editor-hidden');
+    el.zoomPct.textContent = `${Math.round(state.zoom * 100)}%`;
+
+    const fromHash = await decodeHash(location.hash);
+    el.src.value = fromHash !== null ? fromHash : load('src', SAMPLE);
+    if (fromHash !== null) save('src', fromHash);
+
+    configureMermaid();
+    render();
+  }
+  window.__ezBoot = boot;
+  window.__ezNoMermaid = () => setStatus('Could not load Mermaid from the CDN or from vendor/mermaid.min.js. See README for vendoring.', true);
+
+  if (window.mermaid) boot();
+  else window.addEventListener('load', () => { if (window.mermaid) boot(); });
+})();
+</script>
+</body>
+</html>
